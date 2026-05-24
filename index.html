@@ -1746,20 +1746,48 @@ const storage = firebase.storage();
 
 /* ── Firestore: guardar/leer arrays ── */
 const FS_COL = 'iasd_data';
+/* Reduce un base64 existente para caber en Firestore */
+function shrinkB64(b64, maxPx, q) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > maxPx || h > maxPx) {
+        if (w >= h) { h = Math.round(h * maxPx / w); w = maxPx; }
+        else        { w = Math.round(w * maxPx / h); h = maxPx; }
+      }
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', q));
+    };
+    img.onerror = () => resolve(b64); /* si falla, devuelve original */
+    img.src = b64;
+  });
+}
+
 async function fsSave(key, items) {
   try {
-    /* Intentar guardar con fotos incluidas */
-    const data = JSON.parse(JSON.stringify(items));
-    await db.collection(FS_COL).doc(key).set({ items: data, ts: Date.now() });
+    /* Reducir fotos a un tamaño que quepa en Firestore (< 1MB por doc) */
+    const clean = await Promise.all(JSON.parse(JSON.stringify(items)).map(async item => {
+      if (item.photo && item.photo.startsWith('data:'))
+        item.photo = await shrinkB64(item.photo, 500, 0.80);
+      if (item.src && item.src.startsWith('data:'))
+        item.src   = await shrinkB64(item.src,   800, 0.82);
+      return item;
+    }));
+    await db.collection(FS_COL).doc(key).set({ items: clean, ts: Date.now() });
   } catch(e) {
-    /* Si falla por tamaño, guardar sin fotos como fallback */
+    /* Si aún falla (demasiadas fotos), guardar solo metadatos */
     try {
-      const clean = JSON.parse(JSON.stringify(items)).map(item => {
+      const meta = JSON.parse(JSON.stringify(items)).map(item => {
         if (item.photo && item.photo.startsWith('data:')) delete item.photo;
         if (item.src   && item.src.startsWith('data:'))   delete item.src;
         return item;
       });
-      await db.collection(FS_COL).doc(key).set({ items: clean, ts: Date.now() });
+      await db.collection(FS_COL).doc(key).set({ items: meta, ts: Date.now() });
     } catch(e2) { console.warn('[fsSave]', key, e2.message); }
   }
 }
@@ -3541,20 +3569,22 @@ function initGalleryAdmin() {
 function handleFiles(files) {
   if (!files.length) return;
   pendingPhotos = [];
-  const MAX = 2 * 1024 * 1024;
+  const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+  if (!validFiles.length) return;
   let loaded = 0;
-  files.forEach(file => {
-    if (!file.type.startsWith('image/')) return;
-    if (file.size > MAX) { admToast(`"${file.name}" supera 2MB — omitida`); loaded++; checkAllLoaded(); return; }
-    const reader = new FileReader();
-    reader.onload = e => {
-      pendingPhotos.push({ dataUrl: e.target.result, desc: '', name: file.name });
+  function checkAllLoaded() { if (loaded === validFiles.length && pendingPhotos.length) renderPreview(); }
+  validFiles.forEach(file => {
+    /* Comprimir a 1200px / 92% antes de guardar — buena calidad, tamaño razonable */
+    compressImage(file, 1200, 0.92).then(dataUrl => {
+      pendingPhotos.push({ dataUrl, desc: '', name: file.name });
       loaded++;
       checkAllLoaded();
-    };
-    reader.readAsDataURL(file);
+    }).catch(() => {
+      admToast(`"${file.name}" no se pudo procesar`);
+      loaded++;
+      checkAllLoaded();
+    });
   });
-  function checkAllLoaded() { if (loaded === files.length && pendingPhotos.length) renderPreview(); }
 }
 
 function renderPreview() {
