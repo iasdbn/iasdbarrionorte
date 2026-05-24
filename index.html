@@ -7,6 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+<!-- Firebase SDK (compat) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
 
 <style>
@@ -1328,11 +1333,15 @@ footer { padding: 56px 0 32px; border-top: 1px solid var(--border); background: 
     <div class="adm-login-sub">IASD Barrio Norte</div>
     <div class="adm-login-form">
       <div class="adm-field">
+        <label class="adm-label">Email</label>
+        <input class="adm-input" type="email" id="adm-email-input" placeholder="admin@iglesia.com" autocomplete="email">
+      </div>
+      <div class="adm-field">
         <label class="adm-label">Contraseña</label>
-        <input class="adm-input" type="password" id="adm-pass-input" placeholder="••••••••">
+        <input class="adm-input" type="password" id="adm-pass-input" placeholder="••••••••" autocomplete="current-password">
       </div>
       <button class="adm-btn-full" id="adm-login-btn">Ingresar</button>
-      <div class="adm-error" id="adm-error">Contraseña incorrecta</div>
+      <div class="adm-error" id="adm-error">Email o contraseña incorrectos</div>
     </div>
   </div>
 
@@ -1753,6 +1762,112 @@ const CONFIG = {
    STORAGE KEYS
 ═══════════════════════════════════════════════ */
 const KEYS = { preachers: 'iasd_preachers', birthdays: 'iasd_birthdays', stream: 'iasd_stream', pass: 'iasd_admin_pass' };
+
+/* ═══════════════════════════════════════════════
+   FIREBASE — init + helpers
+═══════════════════════════════════════════════ */
+firebase.initializeApp({
+  apiKey:            'AIzaSyCcMvx0CGD8B0Q47X8zOduwy6OgGiCI9k4',
+  authDomain:        'iasd-bn.firebaseapp.com',
+  projectId:         'iasd-bn',
+  storageBucket:     'iasd-bn.firebasestorage.app',
+  messagingSenderId: '78287942101',
+  appId:             '1:78287942101:web:28aedca94b8616f2778d5c'
+});
+const db      = firebase.firestore();
+const auth    = firebase.auth();
+const storage = firebase.storage();
+
+/* ── Firestore: guardar/leer arrays ── */
+const FS_COL = 'iasd_data';
+async function fsSave(key, items) {
+  try {
+    /* Eliminar base64 antes de guardar — sólo URLs de Storage */
+    const clean = JSON.parse(JSON.stringify(items)).map(item => {
+      if (item.photo && item.photo.startsWith('data:')) delete item.photo;
+      if (item.src   && item.src.startsWith('data:'))   delete item.src;
+      return item;
+    });
+    await db.collection(FS_COL).doc(key).set({ items: clean, ts: Date.now() });
+  } catch(e) { console.warn('[fsSave]', key, e.message); }
+}
+async function fsLoad(key) {
+  try {
+    const doc = await db.collection(FS_COL).doc(key).get();
+    return doc.exists ? (doc.data().items ?? null) : null;
+  } catch(e) { console.warn('[fsLoad]', key, e.message); return null; }
+}
+/* Firestore: guardar/leer objetos simples (stream, tv) */
+async function fsSaveObj(key, obj) {
+  try {
+    await db.collection(FS_COL).doc(key).set({ ...JSON.parse(JSON.stringify(obj)), ts: Date.now() });
+  } catch(e) { console.warn('[fsSaveObj]', key, e.message); }
+}
+async function fsLoadObj(key) {
+  try {
+    const doc = await db.collection(FS_COL).doc(key).get();
+    if (!doc.exists) return null;
+    const data = { ...doc.data() };
+    delete data.ts;
+    return data;
+  } catch(e) { console.warn('[fsLoadObj]', key, e.message); return null; }
+}
+
+/* ── Firebase Storage: subir base64 y obtener URL pública ── */
+async function uploadToStorage(b64dataUrl, path) {
+  const ref  = storage.ref(path);
+  const snap = await ref.putString(b64dataUrl, 'data_url', { contentType: 'image/jpeg' });
+  return await snap.ref.getDownloadURL();
+}
+
+/* ── Pedidos de oración: caché local actualizada por onSnapshot ── */
+let prayersCache        = [];
+let prayersUnsubscribe  = null;
+
+function subscribePrayers() {
+  if (prayersUnsubscribe) prayersUnsubscribe();
+  prayersUnsubscribe = db.collection('oraciones')
+    .orderBy('ts', 'desc')
+    .limit(50)
+    .onSnapshot(snap => {
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      prayersCache = snap.docs
+        .map(d => ({ _id: d.id, ...d.data() }))
+        .filter(p => p.ts > weekAgo);
+      renderPrayers();
+      if (document.getElementById('prayer-adm-list')) renderPrayerAdmin();
+    }, err => { console.warn('[prayers]', err.message); });
+}
+
+/* ── Sync inicial: trae datos de Firestore y actualiza la UI ── */
+async function syncFromFirestore() {
+  try {
+    const [lideres, horarios, predicadores, cumpleanos, galeria, streamData, tvData] = await Promise.all([
+      fsLoad('lideres'), fsLoad('horarios'), fsLoad('predicadores'),
+      fsLoad('cumpleanos'), fsLoad('galeria'),
+      fsLoadObj('stream'), fsLoadObj('tv'),
+    ]);
+    if (lideres !== null)      { lsSet(LIDERES_KEY, lideres);        buildLideresCarrusel(); }
+    if (predicadores !== null) { lsSet(KEYS.preachers, predicadores); buildPreachers(); }
+    if (cumpleanos !== null)   { lsSet(KEYS.birthdays, cumpleanos);   buildBirthdays(); }
+    if (galeria !== null)      { lsSet(GAL_KEY, galeria);             buildGalleryFromAdmin(); }
+    if (streamData !== null)   { lsSet(KEYS.stream, streamData);      buildStream(); }
+    if (tvData !== null)       { lsSet('iasd_tv', tvData);            buildTV(); }
+    if (horarios !== null) {
+      lsSet('iasd_schedule', horarios);
+      const tb = document.getElementById('schedule-tbody');
+      if (tb) {
+        tb.innerHTML = '';
+        horarios.forEach(s => {
+          const tr = document.createElement('tr');
+          if (s.highlight) tr.className = 'sched-row-highlight';
+          tr.innerHTML = `<td class="sched-day">${s.day}</td><td class="sched-time">${s.time}</td><td class="sched-service">${s.service}</td>`;
+          tb.appendChild(tr);
+        });
+      }
+    }
+  } catch(e) { console.warn('[syncFromFirestore]', e); }
+}
 const YT_CHANNEL_ID = 'UC6cN4BZQuEPwrFPlH6nvcgA';
 const YT_HANDLE     = '@IASDBarrioNorte';
 const MONTHS_ES    = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
@@ -2050,25 +2165,10 @@ function tienePalabrasProhibidas(texto) {
   });
 }
 
-function loadPrayers() {
-  try { return JSON.parse(localStorage.getItem(PRAYER_KEY)) || []; }
-  catch { return []; }
-}
-
-function savePrayers(arr) {
-  // Guardar solo las últimas 50
-  localStorage.setItem(PRAYER_KEY, JSON.stringify(arr.slice(-50)));
-}
-
-function limpiarPedidosAntiguos() {
-  const prayers = loadPrayers();
-  const ahora = Date.now();
-  const recientes = prayers.filter(p => (ahora - p.ts) < PRAYER_WEEK);
-  if (recientes.length !== prayers.length) {
-    savePrayers(recientes);
-  }
-  return recientes;
-}
+/* loadPrayers / savePrayers / limpiarPedidosAntiguos → reemplazadas por Firestore + prayersCache */
+function loadPrayers()              { return prayersCache; }
+function savePrayers()              { /* no-op: Firestore usa onSnapshot */ }
+function limpiarPedidosAntiguos()   { return prayersCache; }
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -2077,7 +2177,7 @@ function escHtml(s) {
 function renderPrayers() {
   const feed   = document.getElementById('prayer-feed');
   const count  = document.getElementById('prayer-count');
-  const prayers = limpiarPedidosAntiguos();
+  const prayers = prayersCache;
 
   count.textContent = prayers.length + (prayers.length === 1 ? ' petición' : ' peticiones');
 
@@ -2148,19 +2248,33 @@ document.getElementById('prayer-submit').addEventListener('click', () => {
   }
 
   errEl.style.display = 'none';
-  const prayers = loadPrayers();
-  prayers.push({ name: nameEl.value.trim().slice(0, 60), text, ts: Date.now() });
-  savePrayers(prayers);
+  const submitBtn = document.getElementById('prayer-submit');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Enviando...';
 
-  textEl.value  = '';
-  nameEl.value  = '';
-  charCountEl.textContent = `0 / ${PRAYER_MAX}`;
-  charCountEl.style.color = 'var(--text-3)';
-
-  renderPrayers(); // actualiza el feed inmediatamente
+  db.collection('oraciones').add({
+    name: nameEl.value.trim().slice(0, 60) || 'Anónimo',
+    text,
+    ts: Date.now()
+  }).then(() => {
+    textEl.value  = '';
+    nameEl.value  = '';
+    charCountEl.textContent = `0 / ${PRAYER_MAX}`;
+    charCountEl.style.color = 'var(--text-3)';
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Enviar pedido`;
+    /* onSnapshot actualiza el feed automáticamente */
+  }).catch(e => {
+    errEl.textContent = 'No se pudo enviar. Revisá tu conexión.';
+    errEl.style.display = 'block';
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Enviar pedido`;
+  });
 });
 
-renderPrayers();
+renderPrayers(); /* render inicial vacío; se llena cuando llega onSnapshot */
+subscribePrayers();
+syncFromFirestore();
 
 /* Lightbox */
 function openLightbox(src, alt) {
@@ -2378,11 +2492,12 @@ function closeAdminDrawer() {
   overlay.classList.remove('open');
   drawer.classList.remove('open');
   document.body.style.overflow = '';
-  /* ── SIEMPRE limpiar sesión al cerrar ── */
-  sessionStorage.removeItem('iasd_admin');
+  /* Cerrar sesión de Firebase siempre al cerrar el panel */
+  auth.signOut().catch(() => {});
   document.getElementById('adm-panel-wrap').style.display = 'none';
   document.getElementById('adm-login-wrap').style.display  = 'flex';
   document.getElementById('adm-pass-input').value = '';
+  document.getElementById('adm-email-input').value = '';
   document.getElementById('adm-error').style.display = 'none';
 }
 
@@ -2390,28 +2505,42 @@ fab.addEventListener('click', () => drawer.classList.contains('open') ? closeAdm
 overlay.addEventListener('click', closeAdminDrawer);
 document.getElementById('adm-close').addEventListener('click', closeAdminDrawer);
 
-/* ── LOGIN ── */
-function getPass() { return lsGet(KEYS.pass) || 'admin123'; }
-
-function doAdmLogin() {
-  const input = document.getElementById('adm-pass-input').value;
+/* ── LOGIN — Firebase Auth ── */
+async function doAdmLogin() {
+  const email = document.getElementById('adm-email-input').value.trim();
+  const pass  = document.getElementById('adm-pass-input').value;
   const err   = document.getElementById('adm-error');
-  if (input === getPass()) {
-    sessionStorage.setItem('iasd_admin', '1');
-    document.getElementById('adm-login-wrap').style.display = 'none';
-    document.getElementById('adm-panel-wrap').style.display = 'flex';
-    err.style.display = 'none';
-    initAdminPanel();
-  } else {
+  const btn   = document.getElementById('adm-login-btn');
+  if (!email || !pass) { err.textContent = 'Ingresá email y contraseña'; err.style.display = 'block'; return; }
+  btn.textContent = 'Ingresando...';
+  btn.disabled    = true;
+  err.style.display = 'none';
+  try {
+    await auth.signInWithEmailAndPassword(email, pass);
+    /* El onAuthStateChanged de abajo abre el panel */
+  } catch(e) {
+    err.textContent   = 'Email o contraseña incorrectos';
     err.style.display = 'block';
-    document.getElementById('adm-pass-input').select();
+    btn.textContent   = 'Ingresar';
+    btn.disabled      = false;
   }
 }
 
 document.getElementById('adm-login-btn').addEventListener('click', doAdmLogin);
 document.getElementById('adm-pass-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAdmLogin(); });
+document.getElementById('adm-email-input').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('adm-pass-input').focus(); });
 
-/* Sesión nunca se restaura automáticamente — siempre se pide clave */
+/* Abrir panel cuando Firebase confirma el login */
+auth.onAuthStateChanged(user => {
+  const btn = document.getElementById('adm-login-btn');
+  if (btn) { btn.textContent = 'Ingresar'; btn.disabled = false; }
+  if (user && document.getElementById('admin-drawer').classList.contains('open')) {
+    document.getElementById('adm-login-wrap').style.display = 'none';
+    document.getElementById('adm-panel-wrap').style.display = 'flex';
+    document.getElementById('adm-error').style.display = 'none';
+    initAdminPanel();
+  }
+});
 
 /* ── TABS ── */
 document.querySelectorAll('.adm-tab').forEach(btn => {
@@ -2469,10 +2598,7 @@ function initAdminPanel() {
       document.getElementById('b-role').value = '';
     };
     document.getElementById('adm-logout-btn').onclick = () => {
-      sessionStorage.removeItem('iasd_admin');
-      document.getElementById('adm-panel-wrap').style.display = 'none';
-      document.getElementById('adm-login-wrap').style.display = 'flex';
-      document.getElementById('adm-pass-input').value = '';
+      closeAdminDrawer();
     };
     document.getElementById('pass-save').onclick = changePass;
   } catch(e) { console.error('[initAdminPanel] button wiring', e); }
@@ -2568,6 +2694,7 @@ function savePreacher() {
   const all = lsArr(KEYS.preachers);
   all.push({ id: Date.now(), name, role, initials, year: calYear, month: calMonth, days, yt: yt||'', dates: datesLabel(days, calMonth) });
   lsSet(KEYS.preachers, all);
+  fsSave('predicadores', all);
   document.getElementById('p-name').value = '';
   document.getElementById('p-role').value = '';
   document.getElementById('p-yt').value   = '';
@@ -2604,6 +2731,7 @@ function renderPList() {
       if (!confirm('¿Eliminar predicador?')) return;
       const all = lsArr(KEYS.preachers).filter(p => p.id !== parseInt(btn.dataset.id));
       lsSet(KEYS.preachers, all);
+      fsSave('predicadores', all);
       renderCal(); renderPList(); buildPreachers();
       admToast('Eliminado');
     });
@@ -2660,6 +2788,7 @@ function saveBday() {
   const bdays = lsArr(KEYS.birthdays);
   bdays.push({ id: Date.now(), name, role: role||'Miembro', date: mm+'-'+dd, birthYear: parseInt(yyyy) });
   lsSet(KEYS.birthdays, bdays);
+  fsSave('cumpleanos', bdays);
   document.getElementById('b-name').value = '';
   document.getElementById('b-date').value = '';
   document.getElementById('b-role').value = '';
@@ -2733,7 +2862,9 @@ function initStream_adm() {
 
   document.getElementById('st-end').onclick = () => {
     if (!confirm('¿Finalizar la transmisión? El sitio volverá al estado offline.')) return;
-    lsSet(KEYS.stream, { url: '', title: '', status: 'offline', videoId: '', embedSrc: '' });
+    const offlineStream = { url: '', title: '', status: 'offline', videoId: '', embedSrc: '' };
+    lsSet(KEYS.stream, offlineStream);
+    fsSaveObj('stream', offlineStream);
     document.getElementById('st-url').value    = '';
     document.getElementById('st-title').value  = '';
     document.getElementById('st-status').value = 'offline';
@@ -2750,6 +2881,7 @@ function initStream_adm() {
     const url    = document.getElementById('tv-url').value.trim();
     const status = document.getElementById('tv-status').value;
     lsSet('iasd_tv', { url, status });
+    fsSaveObj('tv', { url, status });
     buildTV();
     admToast('TV guardada');
   };
@@ -2773,7 +2905,9 @@ function saveStream_adm() {
   const url    = document.getElementById('st-url').value.trim();
   const title  = document.getElementById('st-title').value.trim();
   const status = document.getElementById('st-status').value;
-  lsSet(KEYS.stream, { url, title, status, videoId: extractYTId(url) || '', embedSrc: extractYTLiveEmbed(url) || '' });
+  const streamObj = { url, title, status, videoId: extractYTId(url) || '', embedSrc: extractYTLiveEmbed(url) || '' };
+  lsSet(KEYS.stream, streamObj);
+  fsSaveObj('stream', streamObj);
   buildStream();
   admToast('Stream actualizado');
 }
@@ -2795,6 +2929,7 @@ function getSchedule() {
 
 function saveSchedule(arr) {
   lsSet('iasd_schedule', arr);
+  fsSave('horarios', arr);
   // Actualiza la tabla en el sitio inmediatamente
   const tb = document.getElementById('schedule-tbody');
   tb.innerHTML = '';
@@ -2925,6 +3060,7 @@ function getLideres() { return lsArr(LIDERES_KEY); }
 function saveLideres(arr) {
   lsSet(LIDERES_KEY, arr);
   buildLideresCarrusel();
+  fsSave('lideres', arr); /* sync a Firestore (sin base64) */
 }
 
 /* ─ Carrusel del sitio ─ */
@@ -2953,8 +3089,8 @@ function buildLideresCarrusel() {
     const card = document.createElement('div');
     card.className = 'lider-card';
     card.innerHTML = `
-      ${l.photo
-        ? `<img src="${l.photo}" alt="${l.name}" class="lider-card-photo">`
+      ${(l.photoUrl || l.photo)
+        ? `<img src="${l.photoUrl || l.photo}" alt="${l.name}" class="lider-card-photo">`
         : `<div class="lider-card-photo-placeholder"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--border)" stroke-width="1.2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></div>`}
       <div class="lider-card-body">
         <div class="lider-card-role">${l.role || ''}</div>
@@ -3080,14 +3216,31 @@ function initLideresAdmin() {
     }).catch(() => admToast('No se pudo leer la imagen'));
   };
 
-  document.getElementById('lid-save').onclick = () => {
+  document.getElementById('lid-save').onclick = async () => {
     try {
       const name = document.getElementById('lid-name').value.trim();
       const role = document.getElementById('lid-role').value.trim();
       const desc = document.getElementById('lid-desc').value.trim();
       if (!name) { document.getElementById('lid-name').focus(); admToast('Ingresá el nombre'); return; }
+
+      const saveBtn = document.getElementById('lid-save');
+      saveBtn.disabled = true;
+      saveBtn.textContent = lidPhotoB64 ? 'Subiendo foto...' : 'Guardando...';
+
+      /* Subir foto a Firebase Storage si hay una */
+      let photoUrl = null;
+      let photo    = null;
+      if (lidPhotoB64) {
+        try {
+          photoUrl = await uploadToStorage(lidPhotoB64, `lideres/${Date.now()}.jpg`);
+        } catch(uploadErr) {
+          console.warn('Upload fallback to base64:', uploadErr.message);
+          photo = lidPhotoB64; /* fallback: guardar base64 localmente */
+        }
+      }
+
       const arr = getLideres();
-      arr.push({ id: Date.now(), name, role, desc, photo: lidPhotoB64 || null });
+      arr.push({ id: Date.now(), name, role, desc, photo, photoUrl });
       saveLideres(arr);
       renderLideresAdmin();
       document.getElementById('lid-name').value = '';
@@ -3097,10 +3250,13 @@ function initLideresAdmin() {
       document.getElementById('lid-photo-name').textContent = '';
       document.getElementById('lid-photo-input').value = '';
       lidPhotoB64 = null;
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg> Agregar líder`;
       admToast('✓ Líder agregado');
     } catch(e) {
       admToast('Error: ' + (e.message || e));
       console.error('[lid-save]', e);
+      document.getElementById('lid-save').disabled = false;
     }
   };
 
@@ -3129,8 +3285,8 @@ function renderLideresAdmin() {
     item.className = 'adm-item';
     item.innerHTML = `
       <div class="adm-item-av" style="overflow:hidden;padding:0;width:38px;height:38px;border-radius:var(--r)">
-        ${l.photo
-          ? `<img src="${l.photo}" style="width:100%;height:100%;object-fit:cover">`
+        ${(l.photoUrl || l.photo)
+          ? `<img src="${l.photoUrl || l.photo}" style="width:100%;height:100%;object-fit:cover">`
           : `<div style="width:100%;height:100%;background:var(--surface-2);display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></div>`}
       </div>
       <div class="adm-item-info">
@@ -3227,7 +3383,10 @@ function renderLideresAdmin() {
 const GAL_KEY = 'iasd_gallery';
 
 function loadGallery() { return lsArr(GAL_KEY); }
-function saveGalleryData(arr) { lsSet(GAL_KEY, arr); }
+function saveGalleryData(arr) {
+  lsSet(GAL_KEY, arr);
+  fsSave('galeria', arr); /* fsSave elimina automáticamente los src con data: */
+}
 
 function buildGalleryFromAdmin() {
   const grid = document.getElementById('gallery-grid');
@@ -3316,16 +3475,35 @@ function renderPreview() {
   });
 }
 
-function confirmPhotos() {
+async function confirmPhotos() {
+  const confirmBtn = document.getElementById('gal-confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Subiendo...';
+
   const gallery = loadGallery();
-  pendingPhotos.forEach(p => gallery.push({ src: p.dataUrl, alt: p.desc || p.name, id: Date.now() + Math.random() }));
-  saveGalleryData(gallery);
-  pendingPhotos = [];
-  document.getElementById('gal-preview-wrap').style.display = 'none';
-  document.getElementById('gal-file-input').value = '';
-  buildGalleryFromAdmin();
-  renderGalSaved();
-  admToast(`${gallery.length > 0 ? 'Fotos guardadas' : 'Guardado'} correctamente`);
+  try {
+    for (const p of pendingPhotos) {
+      let src = p.dataUrl;
+      try {
+        /* Subir a Storage y guardar URL pública */
+        src = await uploadToStorage(p.dataUrl, `galeria/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
+      } catch(e) {
+        console.warn('Gallery upload fallback to base64:', e.message);
+      }
+      gallery.push({ src, alt: p.desc || p.name, id: Date.now() + Math.random() });
+    }
+    saveGalleryData(gallery);
+    pendingPhotos = [];
+    document.getElementById('gal-preview-wrap').style.display = 'none';
+    document.getElementById('gal-file-input').value = '';
+    buildGalleryFromAdmin();
+    renderGalSaved();
+    admToast('✓ Fotos guardadas');
+  } catch(e) {
+    admToast('Error al guardar fotos: ' + e.message);
+  }
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = 'Guardar en la galería';
 }
 
 function renderGalSaved() {
@@ -3409,12 +3587,15 @@ buildTV();
 /* ── ORACIÓN ADMIN ── */
 function initPrayerAdmin() {
   renderPrayerAdmin();
-  document.getElementById('prayer-clear-all').onclick = () => {
+  document.getElementById('prayer-clear-all').onclick = async () => {
     if (!confirm('¿Borrar todos los pedidos de oración?')) return;
-    localStorage.removeItem(PRAYER_KEY);
-    renderPrayers();
-    renderPrayerAdmin();
-    admToast('Todos los pedidos eliminados');
+    try {
+      const batch = db.batch();
+      prayersCache.forEach(p => batch.delete(db.collection('oraciones').doc(p._id)));
+      await batch.commit();
+      /* onSnapshot actualiza la UI automáticamente */
+      admToast('Todos los pedidos eliminados');
+    } catch(e) { admToast('Error al borrar: ' + e.message); }
   };
 }
 
@@ -3423,7 +3604,7 @@ function renderPrayerAdmin() {
   const countEl = document.getElementById('prayer-adm-count');
   if (!list) return;
 
-  const prayers = limpiarPedidosAntiguos();
+  const prayers = prayersCache;
   countEl.textContent = prayers.length + (prayers.length === 1 ? ' pedido' : ' pedidos');
 
   if (!prayers.length) {
@@ -3453,39 +3634,46 @@ function renderPrayerAdmin() {
         <div style="font-size:13px;color:var(--text-2);margin-top:4px;line-height:1.55">${escHtml(p.text)}</div>
       </div>
       <div class="adm-item-actions" style="flex-shrink:0;margin-top:2px">
-        <button class="adm-icon-btn del" data-pidx="${realIdx}" title="Eliminar pedido">
+        <button class="adm-icon-btn del" data-pid="${p._id}" title="Eliminar pedido">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
         </button>
       </div>`;
     list.appendChild(item);
   });
 
-  list.querySelectorAll('[data-pidx]').forEach(btn => {
-    btn.addEventListener('click', () => {
+  list.querySelectorAll('[data-pid]').forEach(btn => {
+    btn.addEventListener('click', async () => {
       if (!confirm('¿Eliminar este pedido de oración?')) return;
-      const prayers = loadPrayers();
-      prayers.splice(parseInt(btn.dataset.pidx), 1);
-      savePrayers(prayers);
-      renderPrayers();       // actualiza el feed público
-      renderPrayerAdmin();   // actualiza el admin
-      admToast('Pedido eliminado');
+      try {
+        await db.collection('oraciones').doc(btn.dataset.pid).delete();
+        /* onSnapshot actualiza feed y admin automáticamente */
+        admToast('Pedido eliminado');
+      } catch(e) { admToast('Error: ' + e.message); }
     });
   });
 }
 
-/* ── CAMBIAR CONTRASEÑA ── */
-function changePass() {
+/* ── CAMBIAR CONTRASEÑA — Firebase Auth ── */
+async function changePass() {
   const cur  = document.getElementById('pass-current').value;
   const nw   = document.getElementById('pass-new').value;
   const conf = document.getElementById('pass-confirm').value;
-  if (cur !== getPass()) { admToast('La contraseña actual es incorrecta'); return; }
-  if (nw.length < 4)     { admToast('La nueva contraseña es muy corta'); return; }
-  if (nw !== conf)       { admToast('Las contraseñas no coinciden'); return; }
-  lsSet(KEYS.pass, nw);
-  document.getElementById('pass-current').value = '';
-  document.getElementById('pass-new').value     = '';
-  document.getElementById('pass-confirm').value = '';
-  admToast('Contraseña cambiada correctamente');
+  if (!cur || !nw || !conf)  { admToast('Completá todos los campos'); return; }
+  if (nw.length < 6)         { admToast('La nueva contraseña debe tener al menos 6 caracteres'); return; }
+  if (nw !== conf)           { admToast('Las contraseñas nuevas no coinciden'); return; }
+  try {
+    const user = auth.currentUser;
+    if (!user) { admToast('No hay sesión activa'); return; }
+    const cred = firebase.auth.EmailAuthProvider.credential(user.email, cur);
+    await user.reauthenticateWithCredential(cred);
+    await user.updatePassword(nw);
+    document.getElementById('pass-current').value = '';
+    document.getElementById('pass-new').value     = '';
+    document.getElementById('pass-confirm').value = '';
+    admToast('✓ Contraseña actualizada correctamente');
+  } catch(e) {
+    admToast(e.code === 'auth/wrong-password' ? 'Contraseña actual incorrecta' : 'Error: ' + e.message);
+  }
 }
 </script>
 </body>
