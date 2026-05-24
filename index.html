@@ -3388,8 +3388,8 @@ function renderLideresAdmin() {
         <div class="adm-field" style="margin-bottom:10px">
           <label class="adm-label">Cambiar foto (opcional)</label>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <button class="adm-btn adm-btn-ghost adm-btn-sm" type="button" id="lid-e-photo-btn-${i}">📷 Cambiar foto</button>
-            <input type="file" id="lid-e-photo-input-${i}" accept="image/*" style="display:none">
+            <button class="adm-btn adm-btn-ghost adm-btn-sm" type="button" onclick="lidEPhotoClick(${i})">📷 Cambiar foto</button>
+            <input type="file" id="lid-e-photo-input-${i}" accept="image/*" style="display:none" onchange="lidEPhotoChange(${i},this)">
             <div id="lid-e-photo-preview-${i}" style="display:${(l.photoUrl||l.photo)?'flex':'none'};align-items:center;gap:6px">
               <img id="lid-e-photo-img-${i}" src="${l.photoUrl||l.photo||''}" style="width:40px;height:40px;border-radius:6px;object-fit:cover;border:1px solid var(--border)">
               <span id="lid-e-photo-name-${i}" style="font-family:var(--mono);font-size:10px;color:var(--text-3)"></span>
@@ -3418,26 +3418,24 @@ function renderLideresAdmin() {
     });
   });
 
-  /* Botones de cambio de foto en edición */
-  arr.forEach((l, i) => {
-    const photoBtn   = document.getElementById(`lid-e-photo-btn-${i}`);
-    const photoInput = document.getElementById(`lid-e-photo-input-${i}`);
-    if (!photoBtn || !photoInput) return;
-    photoBtn.addEventListener('click', () => photoInput.click());
-    photoInput.addEventListener('change', () => {
-      const file = photoInput.files[0];
-      if (!file) return;
-      compressImage(file, 600, 0.88).then(b64 => {
-        photoInput._newB64 = b64;
-        const prev = document.getElementById(`lid-e-photo-preview-${i}`);
-        const img  = document.getElementById(`lid-e-photo-img-${i}`);
-        const name = document.getElementById(`lid-e-photo-name-${i}`);
-        img.src = b64;
-        name.textContent = file.name + ' (nueva)';
-        prev.style.display = 'flex';
-      }).catch(() => admToast('No se pudo leer la imagen'));
-    });
-  });
+  /* Funciones globales para cambio de foto en edición (inline onclick) */
+  window.lidEPhotoClick = function(i) {
+    const inp = document.getElementById('lid-e-photo-input-' + i);
+    if (inp) inp.click();
+  };
+  window.lidEPhotoChange = function(i, input) {
+    const file = input.files[0];
+    if (!file) return;
+    compressImage(file, 600, 0.88).then(function(b64) {
+      input._newB64 = b64;
+      const img  = document.getElementById('lid-e-photo-img-'     + i);
+      const name = document.getElementById('lid-e-photo-name-'    + i);
+      const prev = document.getElementById('lid-e-photo-preview-' + i);
+      if (img)  img.src = b64;
+      if (name) name.textContent = file.name + ' (nueva)';
+      if (prev) prev.style.display = 'flex';
+    }).catch(function() { admToast('No se pudo leer la imagen'); });
+  };
 
   list.querySelectorAll('[data-lsave]').forEach(btn => {
     btn.addEventListener('click', async () => {
