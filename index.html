@@ -2411,6 +2411,8 @@ function setPlay(on) {
   document.querySelectorAll('.w-bar').forEach(b => on ? b.classList.remove('paused') : b.classList.add('paused'));
   const errDiv = document.getElementById('radio-error-msg');
   if (errDiv && on) errDiv.style.display = 'none';
+  const mBtn = document.getElementById('nav-mobile-radio-btn');
+  if (mBtn) mBtn.classList.toggle('playing', on);
 }
 
 function showRadioError() {
@@ -2478,13 +2480,7 @@ document.getElementById('nav-radio-btn').addEventListener('click', () => {
   setTimeout(toggleRadio, 600);
 });
 
-/* ── Sincronizar estado de radio con el botón mobile ── */
-const _origSetPlay = setPlay;
-function setPlay(on) {
-  _origSetPlay(on);
-  const mBtn = document.getElementById('nav-mobile-radio-btn');
-  if (mBtn) mBtn.classList.toggle('playing', on);
-}
+/* mobile radio btn ya está integrado en setPlay */
 
 /* ── Hamburger / menú mobile ── */
 (function () {
