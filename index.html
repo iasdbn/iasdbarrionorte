@@ -1862,9 +1862,12 @@ async function fsSaveGallery(arr) {
 }
 async function fsLoadGallery() {
   try {
-    const snap = await db.collection('iasd_gallery').orderBy('_ts','asc').get();
+    const snap = await db.collection('iasd_gallery').get();
     if (snap.empty) return null;
-    return snap.docs.map(d => { const d2 = d.data(); delete d2._ts; return d2; });
+    /* Ordenar por _ts en el cliente (no requiere índice) */
+    const items = snap.docs.map(d => d.data());
+    items.sort((a, b) => (a._ts || 0) - (b._ts || 0));
+    return items.map(d => { const d2 = { ...d }; delete d2._ts; return d2; });
   } catch(e) { console.warn('[fsLoadGallery]', e.message); return null; }
 }
 
