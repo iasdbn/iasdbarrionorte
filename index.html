@@ -1745,44 +1745,22 @@ const storage = firebase.storage();
 
 /* ── Firestore: guardar/leer arrays ── */
 const FS_COL = 'iasd_data';
-/* Recomprime un base64 existente a tamaño reducido para Firestore (sin Storage) */
-function compressB64ForFirestore(b64) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      let w = img.width, h = img.height;
-      const max = 320;
-      if (w > max || h > max) {
-        if (w >= h) { h = Math.round(h * max / w); w = max; }
-        else        { w = Math.round(w * max / h); h = max; }
-      }
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL('image/jpeg', 0.68));
-    };
-    img.onerror = () => resolve(null); /* si falla, no guardar foto */
-    img.src = b64;
-  });
-}
-
 async function fsSave(key, items) {
   try {
-    /* Recomprimir fotos a tamaño pequeño para Firestore (sin Firebase Storage) */
-    const clean = await Promise.all(JSON.parse(JSON.stringify(items)).map(async item => {
-      if (item.photo && item.photo.startsWith('data:')) {
-        item.photo = await compressB64ForFirestore(item.photo) || undefined;
-      }
-      if (item.src && item.src.startsWith('data:')) {
-        item.src = await compressB64ForFirestore(item.src) || undefined;
-      }
-      return item;
-    }));
-    await db.collection(FS_COL).doc(key).set({ items: clean, ts: Date.now() });
-  } catch(e) { console.warn('[fsSave]', key, e.message); }
+    /* Intentar guardar con fotos incluidas */
+    const data = JSON.parse(JSON.stringify(items));
+    await db.collection(FS_COL).doc(key).set({ items: data, ts: Date.now() });
+  } catch(e) {
+    /* Si falla por tamaño, guardar sin fotos como fallback */
+    try {
+      const clean = JSON.parse(JSON.stringify(items)).map(item => {
+        if (item.photo && item.photo.startsWith('data:')) delete item.photo;
+        if (item.src   && item.src.startsWith('data:'))   delete item.src;
+        return item;
+      });
+      await db.collection(FS_COL).doc(key).set({ items: clean, ts: Date.now() });
+    } catch(e2) { console.warn('[fsSave]', key, e2.message); }
+  }
 }
 async function fsLoad(key) {
   try {
@@ -3449,7 +3427,7 @@ function renderLideresAdmin() {
     photoInput.addEventListener('change', () => {
       const file = photoInput.files[0];
       if (!file) return;
-      compressImage(file, 600, 0.88, b64 => {
+      compressImage(file, 600, 0.88).then(b64 => {
         photoInput._newB64 = b64;
         const prev = document.getElementById(`lid-e-photo-preview-${i}`);
         const img  = document.getElementById(`lid-e-photo-img-${i}`);
@@ -3457,7 +3435,7 @@ function renderLideresAdmin() {
         img.src = b64;
         name.textContent = file.name + ' (nueva)';
         prev.style.display = 'flex';
-      });
+      }).catch(() => admToast('No se pudo leer la imagen'));
     });
   });
 
