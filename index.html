@@ -570,31 +570,7 @@ footer { padding: 56px 0 32px; border-top: 1px solid var(--border); background: 
    ADMIN — BOTÓN FLOTANTE
 ═══════════════════════════════════════════════ */
 #admin-fab {
-  position: fixed;
-  bottom: 24px; right: 24px;
-  z-index: 900;
-  width: 40px; height: 40px;
-  border-radius: 50%;
-  background: rgba(251,251,250,0.85);
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-  backdrop-filter: blur(12px);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.2s;
-  color: var(--text-3);
-}
-#admin-fab:hover {
-  background: var(--surface);
-  color: var(--accent);
-  border-color: var(--accent-light);
-  box-shadow: 0 4px 20px rgba(29,53,87,0.12);
-  transform: scale(1.05);
-}
-#admin-fab.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+  display: none !important;
 }
 
 /* ═══════════════════════════════════════════════
@@ -1333,15 +1309,15 @@ footer { padding: 56px 0 32px; border-top: 1px solid var(--border); background: 
     <div class="adm-login-sub">IASD Barrio Norte</div>
     <div class="adm-login-form">
       <div class="adm-field">
-        <label class="adm-label">Email</label>
-        <input class="adm-input" type="email" id="adm-email-input" placeholder="admin@iglesia.com" autocomplete="email">
+        <label class="adm-label">Usuario</label>
+        <input class="adm-input" type="text" id="adm-user-input" placeholder="Usuario" autocomplete="off">
       </div>
       <div class="adm-field">
         <label class="adm-label">Contraseña</label>
         <input class="adm-input" type="password" id="adm-pass-input" placeholder="••••••••" autocomplete="current-password">
       </div>
       <button class="adm-btn-full" id="adm-login-btn">Ingresar</button>
-      <div class="adm-error" id="adm-error">Email o contraseña incorrectos</div>
+      <div class="adm-error" id="adm-error">Credenciales incorrectas</div>
     </div>
   </div>
 
@@ -1682,21 +1658,10 @@ footer { padding: 56px 0 32px; border-top: 1px solid var(--border); background: 
         </div>
 
         <div class="adm-pass-card">
-          <div class="adm-pass-title">Cambiar contraseña</div>
-          <div class="adm-field">
-            <label class="adm-label">Contraseña actual</label>
-            <input class="adm-input" type="password" id="pass-current" placeholder="••••••••">
-          </div>
-          <div class="adm-field">
-            <label class="adm-label">Nueva contraseña</label>
-            <input class="adm-input" type="password" id="pass-new" placeholder="••••••••">
-          </div>
-          <div class="adm-field">
-            <label class="adm-label">Confirmar nueva</label>
-            <input class="adm-input" type="password" id="pass-confirm" placeholder="••••••••">
-          </div>
-          <div class="adm-actions">
-            <button class="adm-btn adm-btn-primary" id="pass-save">Cambiar contraseña</button>
+          <div class="adm-pass-title">Acceso</div>
+          <div style="font-size:13px;color:var(--text-2);line-height:1.6">
+            Las credenciales de acceso están configuradas en el sistema.<br>
+            Cerrá sesión cuando termines de usar el panel.
           </div>
         </div>
       </div>
@@ -2477,70 +2442,70 @@ document.addEventListener('keydown', e => {
 /* ═══════════════════════════════════════════════
    ADMIN DRAWER
 ═══════════════════════════════════════════════ */
-const fab      = document.getElementById('admin-fab');
 const overlay  = document.getElementById('admin-overlay');
 const drawer   = document.getElementById('admin-drawer');
 
 function openAdminDrawer() {
-  fab.classList.add('active');
   overlay.classList.add('open');
   drawer.classList.add('open');
   document.body.style.overflow = 'hidden';
+  /* Enfocar campo usuario al abrir */
+  setTimeout(() => { const u = document.getElementById('adm-user-input'); if (u) u.focus(); }, 120);
 }
 function closeAdminDrawer() {
-  fab.classList.remove('active');
   overlay.classList.remove('open');
   drawer.classList.remove('open');
   document.body.style.overflow = '';
-  /* Cerrar sesión de Firebase siempre al cerrar el panel */
   auth.signOut().catch(() => {});
   document.getElementById('adm-panel-wrap').style.display = 'none';
   document.getElementById('adm-login-wrap').style.display  = 'flex';
   document.getElementById('adm-pass-input').value = '';
-  document.getElementById('adm-email-input').value = '';
+  document.getElementById('adm-user-input').value = '';
   document.getElementById('adm-error').style.display = 'none';
 }
 
-fab.addEventListener('click', () => drawer.classList.contains('open') ? closeAdminDrawer() : openAdminDrawer());
+/* ── Combo secreto: ArrowDown + 7 simultáneo ── */
+const _admKeys = new Set();
+document.addEventListener('keydown', e => {
+  _admKeys.add(e.key);
+  if (_admKeys.has('ArrowDown') && _admKeys.has('7')) {
+    e.preventDefault();
+    if (!drawer.classList.contains('open')) openAdminDrawer();
+  }
+});
+document.addEventListener('keyup', e => _admKeys.delete(e.key));
+
 overlay.addEventListener('click', closeAdminDrawer);
 document.getElementById('adm-close').addEventListener('click', closeAdminDrawer);
 
-/* ── LOGIN — Firebase Auth ── */
+/* ── LOGIN — credenciales fijas + auth anónima para Firestore ── */
+const ADM_USER = 'iasdbnorte';
+const ADM_PASS = 'iasdbnorte@7';
+
 async function doAdmLogin() {
-  const email = document.getElementById('adm-email-input').value.trim();
+  const user = document.getElementById('adm-user-input').value.trim();
   const pass  = document.getElementById('adm-pass-input').value;
   const err   = document.getElementById('adm-error');
   const btn   = document.getElementById('adm-login-btn');
-  if (!email || !pass) { err.textContent = 'Ingresá email y contraseña'; err.style.display = 'block'; return; }
-  btn.textContent = 'Ingresando...';
-  btn.disabled    = true;
-  err.style.display = 'none';
-  try {
-    await auth.signInWithEmailAndPassword(email, pass);
-    /* El onAuthStateChanged de abajo abre el panel */
-  } catch(e) {
-    err.textContent   = 'Email o contraseña incorrectos';
+  if (user === ADM_USER && pass === ADM_PASS) {
+    err.style.display = 'none';
+    btn.textContent = 'Ingresando...';
+    btn.disabled = true;
+    try { await auth.signInAnonymously(); } catch(e) { console.warn('anon auth:', e.message); }
+    btn.textContent = 'Ingresar';
+    btn.disabled = false;
+    document.getElementById('adm-login-wrap').style.display = 'none';
+    document.getElementById('adm-panel-wrap').style.display = 'flex';
+    initAdminPanel();
+  } else {
+    err.textContent = 'Credenciales incorrectas';
     err.style.display = 'block';
-    btn.textContent   = 'Ingresar';
-    btn.disabled      = false;
   }
 }
 
 document.getElementById('adm-login-btn').addEventListener('click', doAdmLogin);
 document.getElementById('adm-pass-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAdmLogin(); });
-document.getElementById('adm-email-input').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('adm-pass-input').focus(); });
-
-/* Abrir panel cuando Firebase confirma el login */
-auth.onAuthStateChanged(user => {
-  const btn = document.getElementById('adm-login-btn');
-  if (btn) { btn.textContent = 'Ingresar'; btn.disabled = false; }
-  if (user && document.getElementById('admin-drawer').classList.contains('open')) {
-    document.getElementById('adm-login-wrap').style.display = 'none';
-    document.getElementById('adm-panel-wrap').style.display = 'flex';
-    document.getElementById('adm-error').style.display = 'none';
-    initAdminPanel();
-  }
-});
+document.getElementById('adm-user-input').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('adm-pass-input').focus(); });
 
 /* ── TABS ── */
 document.querySelectorAll('.adm-tab').forEach(btn => {
@@ -3653,27 +3618,9 @@ function renderPrayerAdmin() {
   });
 }
 
-/* ── CAMBIAR CONTRASEÑA — Firebase Auth ── */
-async function changePass() {
-  const cur  = document.getElementById('pass-current').value;
-  const nw   = document.getElementById('pass-new').value;
-  const conf = document.getElementById('pass-confirm').value;
-  if (!cur || !nw || !conf)  { admToast('Completá todos los campos'); return; }
-  if (nw.length < 6)         { admToast('La nueva contraseña debe tener al menos 6 caracteres'); return; }
-  if (nw !== conf)           { admToast('Las contraseñas nuevas no coinciden'); return; }
-  try {
-    const user = auth.currentUser;
-    if (!user) { admToast('No hay sesión activa'); return; }
-    const cred = firebase.auth.EmailAuthProvider.credential(user.email, cur);
-    await user.reauthenticateWithCredential(cred);
-    await user.updatePassword(nw);
-    document.getElementById('pass-current').value = '';
-    document.getElementById('pass-new').value     = '';
-    document.getElementById('pass-confirm').value = '';
-    admToast('✓ Contraseña actualizada correctamente');
-  } catch(e) {
-    admToast(e.code === 'auth/wrong-password' ? 'Contraseña actual incorrecta' : 'Error: ' + e.message);
-  }
+/* ── CAMBIAR CONTRASEÑA — (credenciales fijas en el código) ── */
+function changePass() {
+  admToast('Las credenciales están fijadas en el sistema');
 }
 </script>
 </body>
