@@ -551,7 +551,7 @@ footer { padding: 56px 0 32px; border-top: 1px solid var(--border); background: 
 
   /* Líderes */
   .lider-card { grid-template-columns: 1fr; flex: 0 0 88vw; min-height: unset; }
-  .lider-card-photo, .lider-card-photo-placeholder { width: 100%; height: 200px; min-height: unset; }
+  .lider-card-photo, .lider-card-photo-placeholder { width: 100%; height: 260px; min-height: unset; object-position: center 15%; }
   .lider-arrow-left { left: -6px; }
   .lider-arrow-right { right: -6px; }
 
@@ -1848,16 +1848,22 @@ async function syncFromFirestore() {
     if (tvData !== null)       { lsSet('iasd_tv', tvData);            buildTV(); }
     if (horarios !== null) {
       lsSet('iasd_schedule', horarios);
-      const tb = document.getElementById('schedule-tbody');
-      if (tb) {
-        tb.innerHTML = '';
-        horarios.forEach(s => {
-          const tr = document.createElement('tr');
-          if (s.highlight) tr.className = 'sched-row-highlight';
-          tr.innerHTML = `<td class="sched-day">${s.day}</td><td class="sched-time">${s.time}</td><td class="sched-service">${s.service}</td>`;
-          tb.appendChild(tr);
-        });
-      }
+    } else {
+      /* Firestore no tiene horarios → subir los del localStorage/default */
+      const local = lsGet('iasd_schedule');
+      if (local && local.length) fsSave('horarios', local);
+    }
+    /* Redibujar la tabla de horarios siempre */
+    const schedSource = horarios || lsGet('iasd_schedule') || [];
+    const tb = document.getElementById('schedule-tbody');
+    if (tb && schedSource.length) {
+      tb.innerHTML = '';
+      schedSource.forEach(s => {
+        const tr = document.createElement('tr');
+        if (s.highlight) tr.className = 'sched-row-highlight';
+        tr.innerHTML = `<td class="sched-day">${s.day}</td><td class="sched-time">${s.time}</td><td class="sched-service">${s.service}</td>`;
+        tb.appendChild(tr);
+      });
     }
   } catch(e) { console.warn('[syncFromFirestore]', e); }
 }
