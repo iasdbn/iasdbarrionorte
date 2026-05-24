@@ -1840,10 +1840,49 @@ async function syncFromFirestore() {
       fsLoad('cumpleanos'), fsLoad('galeria'),
       fsLoadObj('stream'), fsLoadObj('tv'),
     ]);
-    if (lideres !== null)      { lsSet(LIDERES_KEY, lideres);        buildLideresCarrusel(); }
+    if (lideres !== null) {
+      /* Preservar fotos locales si Firestore no las tiene todavía */
+      const localLids = lsArr(LIDERES_KEY);
+      let needResave = false;
+      const merged = lideres.map(l => {
+        if (!l.photo && !l.photoUrl) {
+          const loc = localLids.find(ll => ll.id === l.id || ll.name === l.name);
+          if (loc && (loc.photo || loc.photoUrl)) {
+            needResave = true;
+            return { ...l, photo: loc.photo || null, photoUrl: loc.photoUrl || null };
+          }
+        }
+        return l;
+      });
+      lsSet(LIDERES_KEY, merged);
+      buildLideresCarrusel();
+      /* Subir fotos recuperadas a Firestore para que otros dispositivos las vean */
+      if (needResave) fsSave('lideres', merged);
+    } else {
+      /* No hay líderes en Firestore → subir los locales */
+      const local = lsArr(LIDERES_KEY);
+      if (local.length) fsSave('lideres', local);
+    }
     if (predicadores !== null) { lsSet(KEYS.preachers, predicadores); buildPreachers(); }
     if (cumpleanos !== null)   { lsSet(KEYS.birthdays, cumpleanos);   buildBirthdays(); }
-    if (galeria !== null)      { lsSet(GAL_KEY, galeria);             buildGalleryFromAdmin(); }
+    if (galeria !== null) {
+      /* Preservar fotos locales de galería si Firestore no las tiene */
+      const localGal = lsArr(GAL_KEY);
+      let galResave = false;
+      const mergedGal = galeria.map(g => {
+        if (!g.src) {
+          const loc = localGal.find(lg => lg.id === g.id);
+          if (loc && loc.src) { galResave = true; return { ...g, src: loc.src }; }
+        }
+        return g;
+      });
+      lsSet(GAL_KEY, mergedGal);
+      buildGalleryFromAdmin();
+      if (galResave) fsSave('galeria', mergedGal);
+    } else {
+      const local = lsArr(GAL_KEY);
+      if (local.length) fsSave('galeria', local);
+    }
     if (streamData !== null)   { lsSet(KEYS.stream, streamData);      buildStream(); }
     if (tvData !== null)       { lsSet('iasd_tv', tvData);            buildTV(); }
     if (horarios !== null) {
