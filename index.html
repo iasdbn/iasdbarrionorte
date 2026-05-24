@@ -1839,12 +1839,41 @@ function subscribePrayers() {
     }, err => { console.warn('[prayers]', err.message); });
 }
 
+/* ── Galería: cada foto en su propio documento (evita límite 1MB) ── */
+async function fsSaveGallery(arr) {
+  try {
+    /* Cargar IDs existentes para borrar los que ya no están */
+    const existing = await db.collection('iasd_gallery').get();
+    const existingIds = new Set(existing.docs.map(d => d.id));
+    const newIds      = new Set(arr.map(item => String(item.id).replace(/\./g,'_')));
+    const batch       = db.batch();
+    /* Guardar / actualizar cada foto */
+    for (const item of arr) {
+      const docId = String(item.id).replace(/\./g,'_');
+      const data  = JSON.parse(JSON.stringify(item));
+      if (data.src && data.src.startsWith('data:'))
+        data.src = await shrinkB64(data.src, 900, 0.85);
+      batch.set(db.collection('iasd_gallery').doc(docId), { ...data, _ts: Date.now() });
+    }
+    /* Borrar fotos eliminadas */
+    existingIds.forEach(id => { if (!newIds.has(id)) batch.delete(db.collection('iasd_gallery').doc(id)); });
+    await batch.commit();
+  } catch(e) { console.warn('[fsSaveGallery]', e.message); }
+}
+async function fsLoadGallery() {
+  try {
+    const snap = await db.collection('iasd_gallery').orderBy('_ts','asc').get();
+    if (snap.empty) return null;
+    return snap.docs.map(d => { const d2 = d.data(); delete d2._ts; return d2; });
+  } catch(e) { console.warn('[fsLoadGallery]', e.message); return null; }
+}
+
 /* ── Sync inicial: trae datos de Firestore y actualiza la UI ── */
 async function syncFromFirestore() {
   try {
     const [lideres, horarios, predicadores, cumpleanos, galeria, streamData, tvData] = await Promise.all([
       fsLoad('lideres'), fsLoad('horarios'), fsLoad('predicadores'),
-      fsLoad('cumpleanos'), fsLoad('galeria'),
+      fsLoad('cumpleanos'), fsLoadGallery(),
       fsLoadObj('stream'), fsLoadObj('tv'),
     ]);
     if (lideres !== null) {
@@ -1872,23 +1901,13 @@ async function syncFromFirestore() {
     }
     if (predicadores !== null) { lsSet(KEYS.preachers, predicadores); buildPreachers(); }
     if (cumpleanos !== null)   { lsSet(KEYS.birthdays, cumpleanos);   buildBirthdays(); }
-    if (galeria !== null) {
-      /* Preservar fotos locales de galería si Firestore no las tiene */
-      const localGal = lsArr(GAL_KEY);
-      let galResave = false;
-      const mergedGal = galeria.map(g => {
-        if (!g.src) {
-          const loc = localGal.find(lg => lg.id === g.id);
-          if (loc && loc.src) { galResave = true; return { ...g, src: loc.src }; }
-        }
-        return g;
-      });
-      lsSet(GAL_KEY, mergedGal);
+    if (galeria !== null && galeria.length) {
+      lsSet(GAL_KEY, galeria);
       buildGalleryFromAdmin();
-      if (galResave) fsSave('galeria', mergedGal);
     } else {
+      /* Firestore no tiene fotos → subir las del localStorage */
       const local = lsArr(GAL_KEY);
-      if (local.length) fsSave('galeria', local);
+      if (local.length) fsSaveGallery(local);
     }
     if (streamData !== null)   { lsSet(KEYS.stream, streamData);      buildStream(); }
     if (tvData !== null)       { lsSet('iasd_tv', tvData);            buildTV(); }
@@ -3516,7 +3535,7 @@ const GAL_KEY = 'iasd_gallery';
 function loadGallery() { return lsArr(GAL_KEY); }
 function saveGalleryData(arr) {
   lsSet(GAL_KEY, arr);
-  fsSave('galeria', arr); /* fsSave elimina automáticamente los src con data: */
+  fsSaveGallery(arr); /* cada foto en su propio doc Firestore */
 }
 
 function buildGalleryFromAdmin() {
